@@ -1,4 +1,6 @@
-
+import random
+import collections
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.utils as nn_utils
@@ -36,27 +38,41 @@ class RewardNet(nn.Module):
         conv_out = self.conv(fx).view(fx.size()[0], -1)
         return self.value(conv_out)
 
-def trainRewardNet(net, optimizer, clip1, clip2,  p1, p2)
-    
 
 class RewardModel:
-    def __init__(self, input_shape, n_actions):
-        self.net = RewardNet(input_shape, n_actions)
-        self.optimizer = optim.Adam(net.parameters(), lr=0.001, eps=1e-3)
+    def __init__(self, input_shape, n_actions, device):
+        self.device = device
+        self.net = RewardNet(input_shape, n_actions).to(device)
+        self.optimizer = optim.Adam(self.net.parameters(), lr=0.001, eps=1e-3)
         self.memory = collections.deque()
         
         self.memoryLimit = 3000
+
+        self.clipStorage = collections.deque()
+        self.clipLimit = 100
         
-    def remember(clip1, clip2, p1, p2):
+    def storeComparison(self, clip1, clip2, p1, p2):
         if len(self.memory) >= self.memoryLimit:
             self.memory.popleft()
         self.memory.append((clip1, clip2, p1, p2))
 
-    def evaluate(state):
+    def storeClip(self, clip):
+        if len(self.clipStorage) >= self.clipLimit:
+            self.clipStorage.popleft()
+        self.clipStorage.append(clip)
+
+
+    def newComparison(self):
+        #TODO the paper recommends having an ensemble of reward models and having the human judge comparisons where they don't agree
+        return random.sample(self.clipStorage, 2)
+        
+        
+
+    def evaluate(self, state):
         #TODO the paper recommends regularization since the scale of the reward model is arbitrary.
         return self.net(state).detach()
 
-    def train(n_samples):
+    def train(self, n_samples):
         samples = random.sample(self.memory, n_samples)
         for (clip1, clip2, p1, p2) in samples:
             #this only trains on one clip pair at a time. might be better to train on multiple clip pairs at once

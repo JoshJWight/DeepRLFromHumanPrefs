@@ -1,3 +1,4 @@
+import threading
 from enum import Enum
 import gi
 import numpy as np
@@ -11,10 +12,14 @@ from gi.repository import GObject
 def pixbuf_from_array(z):
     z=z.astype('uint8')
     h,w,c = z.shape
-    assert c==3 or c==4
+    if not(c==3 or c==4):
+        print(f"Bad shape for pixbuf: {z.shape}")
+        assert(False)
     Z = GLib.Bytes.new(z.tobytes())
     useAlpha = (c==4)
-    return GdkPixbuf.Pixbuf.new_from_bytes(Z, GdkPixbuf.Colorspace.RGB, useAlpha, 8, w, h, w*c)
+    pixbuf = GdkPixbuf.Pixbuf.new_from_bytes(Z, GdkPixbuf.Colorspace.RGB, useAlpha, 8, w, h, w*c)
+    pixbuf = pixbuf.scale_simple(336, 336, GdkPixbuf.InterpType.NEAREST)
+    return pixbuf
 
 class PickerResult(Enum):
     LEFT=1
@@ -26,7 +31,8 @@ class PickerWindow(Gtk.Window):
     def __init__(self):
         Gtk.Window.__init__(self, title="Clip Picker")
 
-        self.judgingClip = True #TODO
+        self.judgingClip = False
+        self.hasResult = False
 
         topBox = Gtk.Box(spacing=6)
         bottomBox = Gtk.Box(spacing=6)
@@ -66,6 +72,12 @@ class PickerWindow(Gtk.Window):
         self.genDefaultClips()
         self.animStep()
 
+    def gtkMain(self):
+        self.gtkThread = threading.Thread(target=Gtk.main)
+        self.gtkThread.start()
+
+    def getResult(self):
+        return (self.clipsnp, self.result)
         
     def genDefaultClips(self):
         h = 80
@@ -80,18 +92,35 @@ class PickerWindow(Gtk.Window):
                 clip.append(pixbuf_from_array(buf))
             self.clips.append(clip)
         
+    def setClips(self, clipsnp):
+        self.clipsnp = clipsnp
+        clips = []
+        for clipnp in clipsnp:
+            clip=[]
+            for frame in clipnp:
+                #fixedFrame = np.moveaxis(frame, 0, 2)
+                fixedFrame = np.zeros((84, 84, 3), dtype='uint8')#TODO magic numbers
+                for i in range(3):
+                    fixedFrame[:84, :84, i] = frame[3, :84, :84]
+                clip.append(pixbuf_from_array(fixedFrame))
+            clips.append(clip)
+        self.clips = clips
+        self.animFrame = 0
+        self.judgingClip = True
+        self.hasResult = False
 
     def animStep(self):
-        if not(self.animFrame==0 and not self.judgingClip):
+        if self.judgingClip:
             for i in range(2):
                 self.imageViews[i].set_from_pixbuf(self.clips[i][self.animFrame])
             self.animFrame = (self.animFrame + 1) % len(self.clips[0])
-        GObject.timeout_add(50, self.animStep)
+        GObject.timeout_add(200, self.animStep)
 
     def pickResult(self, result):
         if self.judgingClip:
             self.result = result
             self.judgingClip = False
+            self.hasResult = True
             print(f"Result: {self.result}")
         else:
             print("No clip to pick result for")
@@ -113,7 +142,7 @@ class PickerWindow(Gtk.Window):
         print("Right")
 
 
-win = PickerWindow()
-win.connect("destroy", Gtk.main_quit)
-win.show_all()
-Gtk.main()
+#win = PickerWindow()
+#win.connect("destroy", Gtk.main_quit)
+#win.show_all()
+#Gtk.main()

@@ -1,5 +1,6 @@
 #Adapted from github.com/PacktPublishing/Deep-Reinforcement-Learning-Hands-On
 
+import random
 import gym
 import ptan
 import numpy as np
@@ -13,6 +14,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from lib import common
+import picker
+import rewardmodel
 
 GAMMA = 0.99
 LEARNING_RATE = 0.001
@@ -21,7 +24,12 @@ BATCH_SIZE = 128
 NUM_ENVS = 50
 
 REWARD_STEPS = 4
+#To be clear, this has nothing to do with the video clips. This was here in the original code
 CLIP_GRAD = 0.1
+
+#But this wasn't
+CLIP_SIZE=25
+CLIPS_PER_BATCH=5
 
 
 class AtariA2C(nn.Module):
@@ -60,7 +68,7 @@ class AtariA2C(nn.Module):
         return self.policy(conv_out), self.value(conv_out)
 
 
-def unpack_batch(batch, net, device='cpu'):
+def unpack_batch(batch, net, rewardModel, device='cpu'):
     """
     Convert batch into training tensors
     :param batch:
@@ -90,6 +98,12 @@ def unpack_batch(batch, net, device='cpu'):
         rewards_np[not_done_idx] += GAMMA ** REWARD_STEPS * last_vals_np
 
     ref_vals_v = torch.FloatTensor(rewards_np).to(device)
+
+    for i in range(CLIPS_PER_BATCH):
+        clip_start = random.randrange(len(states) - CLIP_SIZE)
+        clip_end = clip_start + CLIP_SIZE
+        rewardModel.storeClip(states[clip_start:clip_end])
+
     return states_v, actions_t, ref_vals_v
 
 
@@ -113,6 +127,12 @@ if __name__ == "__main__":
 
     optimizer = optim.Adam(net.parameters(), lr=LEARNING_RATE, eps=1e-3)
 
+
+    rewardModel = rewardmodel.RewardModel(envs[0].observation_space.shape, envs[0].action_space.n, device)
+    pickerWindow = picker.PickerWindow()
+    pickerWindow.show_all()
+    pickerWindow.gtkMain() 
+
     batch = []
 
     with common.RewardTracker(writer, stop_reward=18) as tracker:
@@ -129,7 +149,7 @@ if __name__ == "__main__":
                 if len(batch) < BATCH_SIZE:
                     continue
 
-                states_v, actions_t, vals_ref_v = unpack_batch(batch, net, device=device)
+                states_v, actions_t, vals_ref_v = unpack_batch(batch, net, rewardModel,  device=device)
                 batch.clear()
 
                 optimizer.zero_grad()
@@ -168,3 +188,27 @@ if __name__ == "__main__":
                 tb_tracker.track("grad_l2",         np.sqrt(np.mean(np.square(grads))), step_idx)
                 tb_tracker.track("grad_max",        np.max(np.abs(grads)), step_idx)
                 tb_tracker.track("grad_var",        np.var(grads), step_idx)
+
+                #Handle clip comparisons and reward model training
+                if not pickerWindow.judgingClip:
+                    if pickerWindow.hasResult:
+                        clips, result = pickerWindow.getResult()
+                        if result is not picker.PickerResult.DISCARD:
+                            p1 = 0
+                            p2 = 0
+                            if result is picker.PickerResult.LEFT:
+                                p1 = 1
+                            elif result is picker.PickerResult.RIGHT:
+                                p2 = 1
+                            elif result is picker.PickerResult.SAME:
+                                p1 = 0.5
+                                p2 = 0.5
+                            rewardModel.storeComparison(clips[0], clips[1], p1, p2)
+                    pickerWindow.setClips(rewardModel.newComparison())
+
+
+
+
+
+
+
