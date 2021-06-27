@@ -44,21 +44,17 @@ class RewardModel:
         self.device = device
         self.net = RewardNet(input_shape, n_actions).to(device)
         self.optimizer = optim.Adam(self.net.parameters(), lr=0.001, eps=1e-3)
-        self.memory = collections.deque()
-        
-        self.memoryLimit = 3000
 
-        self.clipStorage = collections.deque()
+        self.memoryLimit = 3000
+        self.memory = collections.deque(maxlen=self.memoryLimit)
+
         self.clipLimit = 100
+        self.clipStorage = collections.deque(maxlen=self.clipLimit)
         
     def storeComparison(self, clip1, clip2, p1, p2):
-        if len(self.memory) >= self.memoryLimit:
-            self.memory.popleft()
         self.memory.append((clip1, clip2, p1, p2))
 
     def storeClip(self, clip):
-        if len(self.clipStorage) >= self.clipLimit:
-            self.clipStorage.popleft()
         self.clipStorage.append(clip)
 
 

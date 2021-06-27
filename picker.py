@@ -31,6 +31,11 @@ class PickerWindow(Gtk.Window):
     def __init__(self):
         Gtk.Window.__init__(self, title="Clip Picker")
 
+        #Constants
+        self.timeout = 100
+        self.postblackout = 2
+        #End Constants
+        
         self.judgingClip = False
         self.hasResult = False
 
@@ -68,7 +73,7 @@ class PickerWindow(Gtk.Window):
 
         self.add(mainBox)
 
-        self.animFrame = 0
+        self.animFrame = [0, 0]
         self.genDefaultClips()
         self.animStep()
 
@@ -93,28 +98,33 @@ class PickerWindow(Gtk.Window):
             self.clips.append(clip)
         
     def setClips(self, clipsnp):
+        frameshape = (84, 84, 3)#TODO magic numbers
+
         self.clipsnp = clipsnp
         clips = []
         for clipnp in clipsnp:
             clip=[]
             for frame in clipnp:
                 #fixedFrame = np.moveaxis(frame, 0, 2)
-                fixedFrame = np.zeros((84, 84, 3), dtype='uint8')#TODO magic numbers
+                fixedFrame = np.zeros(frameshape, dtype='uint8')
                 for i in range(3):
                     fixedFrame[:84, :84, i] = frame[3, :84, :84]
                 clip.append(pixbuf_from_array(fixedFrame))
+            for i in range(self.postblackout):
+                clip.append(pixbuf_from_array(np.zeros(frameshape, dtype='uint8')))
+            
             clips.append(clip)
         self.clips = clips
-        self.animFrame = 0
+        self.animFrame = [0, 0]
         self.judgingClip = True
         self.hasResult = False
 
     def animStep(self):
         if self.judgingClip:
             for i in range(2):
-                self.imageViews[i].set_from_pixbuf(self.clips[i][self.animFrame])
-            self.animFrame = (self.animFrame + 1) % len(self.clips[0])
-        GObject.timeout_add(200, self.animStep)
+                self.imageViews[i].set_from_pixbuf(self.clips[i][self.animFrame[i]])
+                self.animFrame[i] = (self.animFrame[i] + 1) % len(self.clips[i])
+        GObject.timeout_add(self.timeout, self.animStep)
 
     def pickResult(self, result):
         if self.judgingClip:

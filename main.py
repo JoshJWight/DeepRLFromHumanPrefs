@@ -77,20 +77,21 @@ def unpack_batch(batch, net, rewardModel, device='cpu'):
     """
     states = []
     actions = []
-    rewards = []
     not_done_idx = []
     last_states = []
-    for idx, exp in enumerate(batch):
-        states.append(np.array(exp.state, copy=False))
-        actions.append(int(exp.action))
-        rewards.append(exp.reward)
-        if exp.last_state is not None:
+    for idx, hist in enumerate(batch):
+        states.append(np.array(hist[0].state, copy=False))
+        actions.append(int(hist[0].action))
+
+        if len(hist) > REWARD_STEPS:
+            last_states.append(np.array(hist[REWARD_STEPS].state, copy=False))
             not_done_idx.append(idx)
-            last_states.append(np.array(exp.last_state, copy=False))
+
     states_v = torch.FloatTensor(np.array(states, copy=False)).to(device)
+    rewards_v = rewardModel.evaluate(states_v)
     actions_t = torch.LongTensor(actions).to(device)
     # handle rewards
-    rewards_np = np.array(rewards, dtype=np.float32)
+    rewards_np = rewards_v.data.cpu().numpy().flatten()
     if not_done_idx:
         last_states_v = torch.FloatTensor(np.array(last_states, copy=False)).to(device)
         last_vals_v = net(last_states_v)[1]
@@ -99,10 +100,12 @@ def unpack_batch(batch, net, rewardModel, device='cpu'):
 
     ref_vals_v = torch.FloatTensor(rewards_np).to(device)
 
-    for i in range(CLIPS_PER_BATCH):
-        clip_start = random.randrange(len(states) - CLIP_SIZE)
-        clip_end = clip_start + CLIP_SIZE
-        rewardModel.storeClip(states[clip_start:clip_end])
+    for hist in random.sample(batch, CLIPS_PER_BATCH):
+        #TODO this can include clips of different lengths. Could interfere with training nets on many clips at once
+        clip = []
+        for exp in hist:
+            clip.append(np.array(exp.state))
+        rewardModel.storeClip(clip)
 
     return states_v, actions_t, ref_vals_v
 
@@ -123,7 +126,7 @@ if __name__ == "__main__":
     print(net)
 
     agent = ptan.agent.PolicyAgent(lambda x: net(x)[0], apply_softmax=True, device=device)
-    exp_source = ptan.experience.ExperienceSourceFirstLast(envs, agent, gamma=GAMMA, steps_count=REWARD_STEPS)
+    exp_source = ptan.experience.ExperienceSource(envs, agent, steps_count=CLIP_SIZE)
 
     optimizer = optim.Adam(net.parameters(), lr=LEARNING_RATE, eps=1e-3)
 
