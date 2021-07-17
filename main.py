@@ -114,8 +114,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--cuda", default=False, action="store_true", help="Enable cuda")
     parser.add_argument("-n", "--name", required=True, help="Name of the run")
+    parser.add_argument("-l", "--load", default=False, action="store_true", help="Load previous progress from files")
     args = parser.parse_args()
     device = torch.device("cuda" if args.cuda else "cpu")
+
+    if not args.load:
+        print("Are you sure you want to start without loading? Any saved progress will be overwritten. (y/n)")
+        if not input() == "y":
+            print("Loading. Remember to set the command line flag -l next time.")
+            args.load = True
+        else:
+            print("OK, continuing without loading.")
+
 
     make_env = lambda: ptan.common.wrappers.wrap_dqn(gym.make("PongNoFrameskip-v4"))
     envs = [make_env() for _ in range(NUM_ENVS)]
@@ -131,16 +141,21 @@ if __name__ == "__main__":
     optimizer = optim.Adam(net.parameters(), lr=LEARNING_RATE, eps=1e-3)
 
 
-    rewardModel = rewardmodel.RewardModel(envs[0].observation_space.shape, envs[0].action_space.n, device)
+    rewardModel = rewardmodel.RewardModel(envs[0].observation_space.shape, envs[0].action_space.n, device, load=args.load)
     pickerWindow = picker.PickerWindow()
     pickerWindow.show_all()
     pickerWindow.gtkMain() 
 
     batch = []
 
+    batchnum=0
+
     with common.RewardTracker(writer, stop_reward=18) as tracker:
         with ptan.common.utils.TBMeanTracker(writer, batch_size=10) as tb_tracker:
             for step_idx, exp in enumerate(exp_source):
+
+                envs[0].render()                
+
                 batch.append(exp)
 
                 # handle new rewards
@@ -151,46 +166,53 @@ if __name__ == "__main__":
 
                 if len(batch) < BATCH_SIZE:
                     continue
+                
+                batchnum +=1
 
                 states_v, actions_t, vals_ref_v = unpack_batch(batch, net, rewardModel,  device=device)
                 batch.clear()
 
-                optimizer.zero_grad()
-                logits_v, value_v = net(states_v)
-                loss_value_v = F.mse_loss(value_v.squeeze(-1), vals_ref_v)
+                rewardModel.train(30) 
+                
 
-                log_prob_v = F.log_softmax(logits_v, dim=1)
-                adv_v = vals_ref_v - value_v.squeeze(-1).detach()
-                log_prob_actions_v = adv_v * log_prob_v[range(BATCH_SIZE), actions_t]
-                loss_policy_v = -log_prob_actions_v.mean()
+                if rewardModel.isReady():
+                    #TODO move this whole block into a separate file
+                    optimizer.zero_grad()
+                    logits_v, value_v = net(states_v)
+                    loss_value_v = F.mse_loss(value_v.squeeze(-1), vals_ref_v)
 
-                prob_v = F.softmax(logits_v, dim=1)
-                entropy_loss_v = ENTROPY_BETA * (prob_v * log_prob_v).sum(dim=1).mean()
+                    log_prob_v = F.log_softmax(logits_v, dim=1)
+                    adv_v = vals_ref_v - value_v.squeeze(-1).detach()
+                    log_prob_actions_v = adv_v * log_prob_v[range(BATCH_SIZE), actions_t]
+                    loss_policy_v = -log_prob_actions_v.mean()
 
-                # calculate policy gradients only
-                loss_policy_v.backward(retain_graph=True)
-                grads = np.concatenate([p.grad.data.cpu().numpy().flatten()
-                                        for p in net.parameters()
-                                        if p.grad is not None])
+                    prob_v = F.softmax(logits_v, dim=1)
+                    entropy_loss_v = ENTROPY_BETA * (prob_v * log_prob_v).sum(dim=1).mean()
 
-                # apply entropy and value gradients
-                loss_v = entropy_loss_v + loss_value_v
-                loss_v.backward()
-                nn_utils.clip_grad_norm_(net.parameters(), CLIP_GRAD)
-                optimizer.step()
-                # get full loss
-                loss_v += loss_policy_v
+                    # calculate policy gradients only
+                    loss_policy_v.backward(retain_graph=True)
+                    grads = np.concatenate([p.grad.data.cpu().numpy().flatten()
+                                            for p in net.parameters()
+                                            if p.grad is not None])
 
-                tb_tracker.track("advantage",       adv_v, step_idx)
-                tb_tracker.track("values",          value_v, step_idx)
-                tb_tracker.track("batch_rewards",   vals_ref_v, step_idx)
-                tb_tracker.track("loss_entropy",    entropy_loss_v, step_idx)
-                tb_tracker.track("loss_policy",     loss_policy_v, step_idx)
-                tb_tracker.track("loss_value",      loss_value_v, step_idx)
-                tb_tracker.track("loss_total",      loss_v, step_idx)
-                tb_tracker.track("grad_l2",         np.sqrt(np.mean(np.square(grads))), step_idx)
-                tb_tracker.track("grad_max",        np.max(np.abs(grads)), step_idx)
-                tb_tracker.track("grad_var",        np.var(grads), step_idx)
+                    # apply entropy and value gradients
+                    loss_v = entropy_loss_v + loss_value_v
+                    loss_v.backward()
+                    nn_utils.clip_grad_norm_(net.parameters(), CLIP_GRAD)
+                    optimizer.step()
+                    # get full loss
+                    loss_v += loss_policy_v
+
+                    tb_tracker.track("advantage",       adv_v, step_idx)
+                    tb_tracker.track("values",          value_v, step_idx)
+                    tb_tracker.track("batch_rewards",   vals_ref_v, step_idx)
+                    tb_tracker.track("loss_entropy",    entropy_loss_v, step_idx)
+                    tb_tracker.track("loss_policy",     loss_policy_v, step_idx)
+                    tb_tracker.track("loss_value",      loss_value_v, step_idx)
+                    tb_tracker.track("loss_total",      loss_v, step_idx)
+                    tb_tracker.track("grad_l2",         np.sqrt(np.mean(np.square(grads))), step_idx)
+                    tb_tracker.track("grad_max",        np.max(np.abs(grads)), step_idx)
+                    tb_tracker.track("grad_var",        np.var(grads), step_idx)
 
                 #Handle clip comparisons and reward model training
                 if not pickerWindow.judgingClip:
@@ -208,6 +230,10 @@ if __name__ == "__main__":
                                 p2 = 0.5
                             rewardModel.storeComparison(clips[0], clips[1], p1, p2)
                     pickerWindow.setClips(rewardModel.newComparison())
+
+                if batchnum % 10 == 0:
+                    rewardModel.save()
+                    print("saved")
 
 
 

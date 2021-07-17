@@ -1,3 +1,4 @@
+import pickle
 import random
 import collections
 import numpy as np
@@ -26,7 +27,8 @@ class RewardNet(nn.Module):
         self.value = nn.Sequential(
             nn.Linear(conv_out_size, 512),
             nn.ReLU(),
-            nn.Linear(512, 1)
+            nn.Linear(512, 1),
+            nn.Sigmoid()
         )
 
     def _get_conv_out(self, shape):
@@ -40,7 +42,10 @@ class RewardNet(nn.Module):
 
 
 class RewardModel:
-    def __init__(self, input_shape, n_actions, device):
+    def __init__(self, input_shape, n_actions, device, load=False):
+        self.memoryFile = "rewardmemory.dat"
+        self.modelFile = "rewardmodel.dat"
+
         self.device = device
         self.net = RewardNet(input_shape, n_actions).to(device)
         self.optimizer = optim.Adam(self.net.parameters(), lr=0.001, eps=1e-3)
@@ -50,7 +55,23 @@ class RewardModel:
 
         self.clipLimit = 100
         self.clipStorage = collections.deque(maxlen=self.clipLimit)
-        
+
+        self.nTrainSteps = 0
+        self.nPreTrain = 10000
+    
+        print(f"Load: {load}")
+        if load:
+            self.net.load_state_dict(torch.load(self.modelFile))
+            self.net.eval()
+            self.memory=pickle.load(open(self.memoryFile, "rb"))
+            self.nTrainSteps = nPreTrain + 1
+            print("Loaded reward model")
+            print(f"Memory size: {len(self.memory)}")
+
+    def save(self):
+        torch.save(self.net.state_dict(), self.modelFile)
+        pickle.dump(self.memory, open(self.memoryFile, "wb"))
+    
     def storeComparison(self, clip1, clip2, p1, p2):
         self.memory.append((clip1, clip2, p1, p2))
 
@@ -69,13 +90,20 @@ class RewardModel:
         return self.net(state).detach()
 
     def train(self, n_samples):
+        if len(self.memory) < n_samples:
+            print(f"Reward model not ready to train - only has {len(self.memory)} comparisons")
+            return
+
         samples = random.sample(self.memory, n_samples)
+
+        losses = []
         for (clip1, clip2, p1, p2) in samples:
-            #this only trains on one clip pair at a time. might be better to train on multiple clip pairs at once
+
+            #Might be able to do this in a single pass with a higher-dimensional tensor
 
             #assume clips are arrays of states
-            clip1_v = torch.FloatTensor(np.array(clip1, copy=False)).to(device)
-            clip2_v = torch.FloatTensor(np.array(clip2, copy=False)).to(device)
+            clip1_v = torch.FloatTensor(np.array(clip1, copy=False)).to(self.device)
+            clip2_v = torch.FloatTensor(np.array(clip2, copy=False)).to(self.device)
 
             self.optimizer.zero_grad()
 
@@ -86,10 +114,23 @@ class RewardModel:
             phat2 = expsum2 / (expsum2 + expsum1)
 
             loss = -1.0 * ((p1 * torch.log(phat1)) + (p2 * torch.log(phat2)))
-
-            loss.backward()
-
-            self.optimizer.step()
+            losses.append(loss)
+            
+            if torch.isnan(loss).any():
+                print("NaN Alert!")
+                print(f"expsums: {expsum1}, {expsum2} phats: {phat1}, {phat2} loss: {loss}")
 
             #TODO track stuff
+
+        totalLoss = sum(losses)
+        totalLoss.backward()
+        self.optimizer.step()
+
+        self.nTrainSteps += n_samples
+        print(f"Reward model loss: {totalLoss}")
+        if not self.isReady():
+            print(f"Total steps: {self.nTrainSteps}/{self.nPreTrain}")
              
+
+    def isReady(self):
+        return self.nTrainSteps > self.nPreTrain
